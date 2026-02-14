@@ -1,0 +1,51 @@
+{
+  "name": "Pizzaria Napoli",
+  "whatsapp_number": "5511999999999",
+  "delivery_fee": 5.0,
+  "opening_hours": {
+    "monday": "18:00-23:00",
+    "tuesday": "18:00-23:00",
+    "wednesday": "18:00-23:00",
+    "thursday": "18:00-23:00",
+    "friday": "18:00-00:00",
+    "saturday": "18:00-00:00",
+    "sunday": "18:00-23:00"
+  },
+  "menu": {
+    "pizzas": [
+      {
+        "id": "calabresa",
+        "name": "Pizza Calabresa",
+        "price": 39.9,
+        "description": "Molho, mussarela e calabresa"
+      },
+      {
+        "id": "marguerita",
+        "name": "Pizza Marguerita",
+        "price": 42.9,
+        "description": "Molho, mussarela e manjericão"
+      }
+    ],
+    "bebidas": [
+      {
+        "id": "coca_2l",
+        "name": "Coca-Cola 2L",
+        "price": 12.0,
+        "description": "Refrigerante 2 litros"
+      }
+    ]
+  },
+  "promotions": [
+    {
+      "trigger": "calabresa",
+      "suggest": "coca_2l",
+      "message": "Quer adicionar uma Coca 2L por apenas R$12?"
+    }
+  ],
+  "upsell_rules": [
+    {
+      "condition": "no_drink",
+      "suggest": "bebidas"
+    }
+  ]
+}
