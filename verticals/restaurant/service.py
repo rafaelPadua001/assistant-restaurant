@@ -4,6 +4,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote
@@ -23,7 +24,7 @@ PROMO_KEYWORDS = {"promo", "promocao", "promocoes"}
 FINISH_KEYWORDS = {"finalizar", "fechar", "encerrar", "checkout"}
 CONFIRM_KEYWORDS = {"sim", "confirmar", "confirmo", "ok", "pode"}
 EDIT_KEYWORDS = {"editar", "mudar", "alterar", "nao", "cancelar", "voltar"}
-REMOVE_KEYWORDS = {"remover", "tirar", "excluir", "deletar"}
+REMOVE_KEYWORDS = {"remover", "remova", "remove", "tirar", "tire", "retirar", "retire", "excluir", "deletar"}
 
 NUMBER_WORDS = {
     "um": 1,
@@ -436,7 +437,7 @@ class ConversationManager:
         self.state.pop("awaiting_info", None)
         self.state.pop("confirmed", None)
 
-        now = datetime.now()
+        now = datetime.now(ZoneInfo("America/Sao_Paulo"))
         self.closed_notice = None if is_open(config, now) else _closed_message(config, now)
 
     def handle_message(self, message: str) -> Dict[str, Any]:
@@ -510,6 +511,24 @@ class ConversationManager:
             "Para finalizar, responda 'sim'. Para mudar o pedido, diga 'editar'."
         )
 
+    def _split_multi_items(self, message: str) -> List[str]:
+        #separa por virgula ou "e" para tentar pegar multiplos itens em uma frase
+        parts = re.split(r",|\se\s", message, flags=re.IGNORECASE)
+        return [p.strip() for p in parts if p.strip()]
+    
+    def _parse_multiple_items(self, message: str, intent_type: IntentType) -> List[Intent]:
+        parts = self._split_multi_items(message)
+        intents: List[Intent] = []
+
+        for part in parts:
+            indexed = _match_item(part, self.item_index)
+            if not indexed:
+                continue
+            quantity = _extract_quantity(part, indexed)
+            intents.append(Intent(intent_type, indexed.item, quantity))
+
+        return intents
+    
     def _handle_general(self, intent: Intent, message: str) -> Dict[str, Any]:
         if intent.type == IntentType.SHOW_MENU:
             return self._build_response(_menu_text(self.config))
@@ -522,27 +541,33 @@ class ConversationManager:
                 return self._build_response("\n".join(promo_lines))
             return self._build_response("No momento nao temos promocoes ativas.")
 
-        if intent.type == IntentType.ADD_ITEM and intent.item:
-            self.cart.add(intent.item.id, intent.quantity)
-            total = self.cart.total()
-            response_lines = [
-                f"Adicionado: {intent.quantity}x {intent.item.name}.",
-                f"Total parcial (com entrega): R$ {total:.2f}.",
-            ]
+        # Trata multiplos apenas para ADD ou REMOVE
+        if intent.type in {IntentType.ADD_ITEM, IntentType.REMOVE_ITEM}:
+            # So entra se realmente for frase composta
+            if "," in message or " e " in message.lower():
+                multi_intents = self._parse_multiple_items(message, intent.type)
 
-            for promo in self.config.promotions:
-                if promo.trigger == intent.item.id:
-                    response_lines.append(promo.message)
+                response_lines = []
 
-            if not self.cart.has_beverage(self.item_index):
-                beverage = _find_beverage_item(self.item_index)
-                if beverage:
-                    response_lines.append(
-                        f"Quer adicionar {beverage.name} por R$ {beverage.price:.2f} para completar seu pedido?"
-                    )
+                for multi_intent in multi_intents:
+                    if multi_intent.type == IntentType.ADD_ITEM:
+                        self.cart.add(multi_intent.item.id, multi_intent.quantity)
+                        response_lines.append(
+                            f"{multi_intent.quantity}x {multi_intent.item.name}"
+                        )
+                    else:
+                        self.cart.remove(multi_intent.item.id, multi_intent.quantity)
+                        response_lines.append(
+                            f"{multi_intent.quantity}x {multi_intent.item.name} removido"
+                        )
 
-            response_lines.append("Se quiser finalizar, diga 'finalizar'.")
-            return self._build_response(" ".join(response_lines))
+                total = self.cart.total()
+
+                return self._build_response(
+                    "Atualizacao do carrinho:\n• "
+                    + "\n• ".join(response_lines)
+                    + f"\n\nTotal atual (com entrega): R$ {total:.2f}."
+                )
 
         if intent.type == IntentType.REMOVE_ITEM and intent.item:
             removed = self.cart.remove(intent.item.id, intent.quantity)
@@ -556,6 +581,17 @@ class ConversationManager:
             return self._build_response(
                 f"Removi {intent.quantity}x {intent.item.name}. Total atual: R$ {total:.2f}."
             )
+
+        if intent.type == IntentType.ADD_ITEM and intent.item:
+            self.cart.add(intent.item.id, intent.quantity)
+            total = self.cart.total()
+            final_text = (
+                "Adicionado ao carrinho:\n• "
+                f"{intent.quantity}x {intent.item.name}"
+                + f"\n\nTotal parcial (com entrega): R$ {total:.2f}.\n"
+                "Se quiser finalizar, diga 'finalizar'."
+            )
+            return self._build_response(final_text)
 
         if intent.type == IntentType.FINISH:
             if not self.cart.has_items():
@@ -618,14 +654,29 @@ class ConversationManager:
             "Pedido confirmado! Clique no link para enviar via WhatsApp.", whatsapp_link=wa_link
         )
 
-    def _build_response(self, text: str, whatsapp_link: Optional[str] = None) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
-            "text": _response_with_notice(text, self.closed_notice),
-            "state": self.state,
-        }
-        if whatsapp_link:
-            payload["whatsapp_link"] = whatsapp_link
-        return payload
+    def _build_response(
+            self,
+            text: str,
+            whatsapp_link: Optional[str] = None,
+            include_notice: bool = False,
+        ) -> Dict[str, Any]:
+
+            final_text = text
+
+            if include_notice and self.closed_notice:
+                final_text = f"{self.closed_notice}\n\n{text}"
+
+            payload: Dict[str, Any] = {
+                "text": final_text,
+                "state": self.state,
+                "is_open": self.closed_notice is None,
+            }
+
+            if whatsapp_link:
+                payload["whatsapp_link"] = whatsapp_link
+
+            return payload
+
 
 
 class RestaurantService:
