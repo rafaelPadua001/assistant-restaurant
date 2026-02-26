@@ -24,6 +24,80 @@
         "name": "Pizza Marguerita",
         "price": 42.9,
         "description": "Molho, mussarela e manjericão"
+      },
+      {
+        "id": "margherita_classica",
+        "name": "Margherita Clássica",
+        "price": 39.9,
+        "description": "Molho artesanal, mussarela, tomate italiano, manjericão e azeite extra virgem."
+      },
+      {
+        "id": "pepperoni_supreme",
+        "name": "Pepperoni Supreme",
+        "price": 44.9,
+        "description": "Mussarela, pepperoni crocante, molho rústico e finalização com orégano."
+      },
+      {
+        "id": "quatro_queijos",
+        "name": "Quatro Queijos",
+        "price": 46.9,
+        "description": "Mussarela, gorgonzola, parmesão, provolone e toque de mel artesanal."
+      },
+      {
+        "id": "frango_catupiry",
+        "name": "Frango com Catupiry",
+        "price": 42.9,
+        "description": "Frango desfiado temperado, catupiry cremoso, milho e cheiro-verde."
+      },
+      {
+        "id": "calabresa_especial",
+        "name": "Calabresa Especial",
+        "price": 41.9,
+        "description": "Calabresa defumada, cebola roxa, mussarela, molho artesanal e azeitonas."
+      },
+      {
+        "id": "veggie_mediterranea",
+        "name": "Veggie Mediterrânea",
+        "price": 43.9,
+        "description": "Abobrinha, berinjela, tomate, pimentões, mussarela e pesto de manjericão."
+      }
+    ],
+    "lanches": [
+      {
+        "id": "combo_smash_classico",
+        "name": "Combo Smash Clássico",
+        "price": 26.9,
+        "description": "Burger smash com cheddar, batatas crocantes e refrigerante 350ml."
+      },
+      {
+        "id": "combo_bacon_cheddar",
+        "name": "Combo Bacon Cheddar",
+        "price": 31.9,
+        "description": "Hambúrguer com bacon e cheddar, batatas rústicas e bebida à escolha."
+      },
+      {
+        "id": "combo_caprese",
+        "name": "Combo Caprese",
+        "price": 29.9,
+        "description": "Burger caprese, batatas fritas sequinhas e refrigerante lata."
+      },
+      {
+        "id": "combo_supreme",
+        "name": "Combo Supreme",
+        "price": 27.9,
+        "description": "Hambúrguer alto com legumes frescos, batatas e bebida gelada."
+      },
+      {
+        "id": "combo_duplo_cheddar",
+        "name": "Combo Duplo Cheddar",
+        "price": 38.9,
+        "description": "Duplo burger com cheddar, batatas douradas e refrigerante 350ml."
+      },
+      {
+        "id": "combo_familia",
+        "name": "Combo Família",
+        "price": 44.9,
+        "description": "Cheeseburger completo, batatas generosas e bebida grande."
       }
     ],
     "bebidas": [
@@ -32,6 +106,42 @@
         "name": "Coca-Cola 2L",
         "price": 12.0,
         "description": "Refrigerante 2 litros"
+      },
+      {
+        "id": "refrigerante_lata_350ml",
+        "name": "Refrigerante Lata 350ml",
+        "price": 6.9,
+        "description": "Coca, Guaraná, Sprite ou Fanta bem gelados."
+      },
+      {
+        "id": "refrigerante_1_5l",
+        "name": "Refrigerante 1,5L",
+        "price": 12.9,
+        "description": "Ideal para dividir. Opções variadas no gelo."
+      },
+      {
+        "id": "suco_natural_400ml",
+        "name": "Suco Natural 400ml",
+        "price": 9.9,
+        "description": "Laranja, maracujá, limão ou abacaxi com hortelã."
+      },
+      {
+        "id": "agua_mineral",
+        "name": "Água Mineral",
+        "price": 4.9,
+        "description": "Sem gás ou com gás, sempre geladinha."
+      },
+      {
+        "id": "milkshake_400ml",
+        "name": "Milkshake 400ml",
+        "price": 14.9,
+        "description": "Chocolate, baunilha ou morango com chantilly."
+      },
+      {
+        "id": "cha_gelado_400ml",
+        "name": "Chá Gelado 400ml",
+        "price": 8.9,
+        "description": "Chá de pêssego ou limão com gelo e hortelã."
       }
     ]
   },

@@ -1,0 +1,55 @@
+# =========================
+# ENV FILES (SENSITIVE)
+# =========================
+.env
+.env.*
+example.env
+*.env
+
+# Specific env inside folders
+restaurant/.env
+*/.env
+
+# =========================
+# PYTHON
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# =========================
+# DATABASE
+# =========================
+*.sqlite3
+*.db
+
+# =========================
+# LOGS
+# =========================
+*.log
+
+# =========================
+# IDE / EDITOR
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# OS FILES
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# RENDER
+# =========================
+.render

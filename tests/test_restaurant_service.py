@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from main import app
 from verticals.restaurant.service import RestaurantService
+import verticals.restaurant.service as service_module
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -24,6 +25,23 @@ def _config_info() -> dict:
     return {"path": dest, "restaurant_id": source.stem}
 
 
+@pytest.fixture(autouse=True)
+def _mock_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_order(_payload: dict):
+        return (123, None)
+
+    def _fake_checkout(_order_id: int):
+        return ("http://checkout.test/abc", None)
+
+    monkeypatch.setattr(service_module, "_create_order", _fake_order)
+    monkeypatch.setattr(service_module, "_create_checkout", _fake_checkout)
+
+
+@pytest.fixture(autouse=True)
+def _mock_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(service_module, "is_open", lambda *_args, **_kwargs: True)
+
+
 def test_restaurant_chat_flow(_config_info: dict) -> None:
     config_path = _config_info["path"]
     restaurant_id = _config_info["restaurant_id"]
@@ -35,7 +53,8 @@ def test_restaurant_chat_flow(_config_info: dict) -> None:
     client = TestClient(app)
 
     response = client.post(
-        f"/restaurant/{restaurant_id}/chat", json={"message": "menu", "state": {}}
+        f"/restaurant/{restaurant_id}/chat",
+        json={"message": "menu", "state": {"restaurant_id": 1}},
     )
     assert response.status_code == 200
     data = response.json()
@@ -56,7 +75,7 @@ def test_restaurant_chat_flow(_config_info: dict) -> None:
     )
     assert response.status_code == 200
     data = response.json()
-    assert "whatsapp_link" not in data
+    assert "checkout_url" not in data
     assert "Resumo do pedido" in data["message"]
 
     response = client.post(
@@ -81,4 +100,6 @@ def test_restaurant_chat_flow(_config_info: dict) -> None:
     )
     assert response.status_code == 200
     data = response.json()
-    assert "whatsapp_link" in data
+    assert "order_id" in data
+    assert "checkout_url" in data
+    assert "link para pagamento" in data["message"].lower()

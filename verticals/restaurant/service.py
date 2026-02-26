@@ -1,30 +1,30 @@
 ﻿from __future__ import annotations
 
+import json
+import logging
+import os
+from dotenv import load_dotenv
 import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
-from zoneinfo import ZoneInfo
 from enum import Enum
-from typing import Any, Dict, Iterable, List, Optional, Tuple
-from urllib.parse import quote
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+from urllib import error as url_error
+from urllib import request as url_request
 
 from .config_schema import MenuItem, RestaurantConfig
-from .tools import (
-    build_whatsapp_message,
-    calculate_total,
-    find_menu_item,
-    is_open,
-    load_config,
-)
+from .tools import calculate_total, find_menu_item, load_config
 
+load_dotenv()
 
 MENU_KEYWORDS = {"menu", "cardapio"}
 PROMO_KEYWORDS = {"promo", "promocao", "promocoes"}
 FINISH_KEYWORDS = {"finalizar", "fechar", "encerrar", "checkout"}
 CONFIRM_KEYWORDS = {"sim", "confirmar", "confirmo", "ok", "pode"}
 EDIT_KEYWORDS = {"editar", "mudar", "alterar", "nao", "cancelar", "voltar"}
-REMOVE_KEYWORDS = {"remover", "remova", "remove", "tirar", "tire", "retirar", "retire", "excluir", "deletar"}
+REMOVE_KEYWORDS = {"remover", "tirar", "excluir", "deletar"}
 
 NUMBER_WORDS = {
     "um": 1,
@@ -58,6 +58,15 @@ GENERIC_ITEM_TOKENS = {
     "media",
     "grande",
 }
+
+ORDER_CREATE_URL_DEFAULT = "http://localhost:8000/orders/public"
+CHECKOUT_URL_DEFAULT = "http://localhost:8000/api/orders/checkout"
+
+logger = logging.getLogger(__name__)
+
+
+def get_restaurant_id() -> Optional[str]:
+    return os.getenv("RESTAURANT_ID")
 
 
 class ConversationStep(str, Enum):
@@ -260,7 +269,7 @@ def _extract_name(text: str) -> Optional[str]:
 
 
 def _extract_address(text: str) -> Optional[str]:
-    match = re.search(r"\b(endereco|endereco)\s*(e|e|:)?\s+(.+)", text, re.IGNORECASE)
+    match = re.search(r"\b(endereco|endereço)\s*(e|é|:)?\s+(.+)", text, re.IGNORECASE)
     if match:
         return match.group(3).strip()
     return None
@@ -297,24 +306,143 @@ def _closed_message(config: RestaurantConfig, now: datetime) -> str:
     return "Estamos fechados agora."
 
 
+def _response_with_notice(text: str, notice: Optional[str]) -> str:
+    if not notice:
+        return text
+    return f"{notice}\n\n{text}"
+
+
+def _create_order(payload: Dict[str, Any]) -> Tuple[Optional[int], Optional[str]]:
+    api_key = os.getenv("INTERNAL_API_KEY", "")
+    if not api_key:
+        return None, "INTERNAL_API_KEY nao configurada."
+
+    url = os.getenv("ORDER_CREATE_URL", ORDER_CREATE_URL_DEFAULT)
+    body = json.dumps(payload).encode("utf-8")
+    request = url_request.Request(url, data=body, method="POST")
+    request.add_header("Content-Type", "application/json")
+    request.add_header("X-API-KEY", api_key)
+
+    try:
+        logger.info("Payload enviado para criacao de pedido: %s", payload)
+        with url_request.urlopen(request, timeout=10) as response:
+            response_body = response.read().decode("utf-8")
+            status = response.status
+    except url_error.HTTPError as exc:
+        response_body = exc.read().decode("utf-8") if exc.fp else ""
+        logger.error(
+            "Erro HTTP ao criar pedido (status=%s): %s", exc.code, response_body
+        )
+        return None, "Nao consegui registrar seu pedido agora. Tente novamente."
+    except url_error.URLError as exc:
+        logger.error("Falha de conexao ao criar pedido: %s", exc.reason)
+        return None, "Nao consegui registrar seu pedido agora. Tente novamente."
+    except Exception:
+        logger.exception("Erro inesperado ao criar o pedido.")
+        return None, "Nao consegui registrar seu pedido agora. Tente novamente."
+
+    logger.info("Resposta criar pedido (status=%s): %s", status, response_body)
+
+    if status not in {200, 201}:
+        logger.error("Status inesperado ao criar pedido: %s", status)
+        return None, "Nao consegui registrar seu pedido agora. Tente novamente."
+
+    try:
+        data = json.loads(response_body)
+    except json.JSONDecodeError:
+        logger.error("Resposta invalida do servico de pedidos: %s", response_body)
+        return None, "Nao consegui registrar seu pedido agora. Tente novamente."
+
+    print("BACKEND RESPONSE:", data)
+
+    if data.get("open") is False:
+        message = data.get("message") or "Estamos fechados agora."
+        logger.info("Backend informou fechado: %s", message)
+        return None, message
+
+    order_id = data.get("order_id") or data.get("id")
+    if not order_id:
+        logger.error("Servico de pedidos nao retornou order_id: %s", data)
+        return None, "Nao consegui registrar seu pedido agora. Tente novamente."
+
+    return int(order_id), None
+
+
+def _create_checkout(order_id: int) -> Tuple[Optional[str], Optional[str]]:
+    api_key = os.getenv("INTERNAL_API_KEY", "")
+    if not api_key:
+        return None, "INTERNAL_API_KEY nao configurada."
+
+    base_url = os.getenv("CHECKOUT_URL", CHECKOUT_URL_DEFAULT).rstrip("/")
+    url = f"{base_url}/{order_id}"
+    request = url_request.Request(url, method="POST")
+    request.add_header("Content-Type", "application/json")
+    request.add_header("X-API-KEY", api_key)
+
+    try:
+        logger.info("Solicitando checkout para order_id=%s", order_id)
+        with url_request.urlopen(request, timeout=10) as response:
+            response_body = response.read().decode("utf-8")
+            status = response.status
+    except url_error.HTTPError as exc:
+        response_body = exc.read().decode("utf-8") if exc.fp else ""
+        logger.error(
+            "Erro HTTP ao criar checkout (status=%s): %s", exc.code, response_body
+        )
+        return None, "Nao consegui gerar o link de pagamento agora. Tente novamente."
+    except url_error.URLError as exc:
+        logger.error("Falha de conexao ao criar checkout: %s", exc.reason)
+        return None, "Nao consegui gerar o link de pagamento agora. Tente novamente."
+    except Exception:
+        logger.exception("Erro inesperado ao criar o checkout.")
+        return None, "Nao consegui gerar o link de pagamento agora. Tente novamente."
+
+    logger.info("Resposta checkout (status=%s): %s", status, response_body)
+
+    if status not in {200, 201}:
+        logger.error("Status inesperado ao criar checkout: %s", status)
+        return None, "Nao consegui gerar o link de pagamento agora. Tente novamente."
+
+    try:
+        data = json.loads(response_body)
+    except json.JSONDecodeError:
+        logger.error("Resposta invalida do servico de checkout: %s", response_body)
+        return None, "Nao consegui gerar o link de pagamento agora. Tente novamente."
+
+    print("BACKEND RESPONSE:", data)
+
+    if data.get("open") is False:
+        message = data.get("message") or "Estamos fechados agora."
+        logger.info("Backend informou fechado no checkout: %s", message)
+        return None, message
+
+    checkout_url = data.get("checkout_url")
+    if not checkout_url:
+        logger.error("Servico de checkout nao retornou link: %s", data)
+        return None, "Nao consegui gerar o link de pagamento agora. Tente novamente."
+
+    return checkout_url, None
+
+
 def parse_intent(message: str, indexed_items: List[IndexedItem]) -> Intent:
     text = _normalize_text(message)
+    tokens = set(text.split())
 
-    if any(keyword in text for keyword in MENU_KEYWORDS):
+    if tokens & MENU_KEYWORDS or any(keyword in text for keyword in MENU_KEYWORDS):
         return Intent(IntentType.SHOW_MENU)
-    if any(keyword in text for keyword in PROMO_KEYWORDS):
+    if tokens & PROMO_KEYWORDS or any(keyword in text for keyword in PROMO_KEYWORDS):
         return Intent(IntentType.SHOW_PROMOS)
-    if any(keyword in text for keyword in FINISH_KEYWORDS):
+    if tokens & FINISH_KEYWORDS or any(keyword in text for keyword in FINISH_KEYWORDS):
         return Intent(IntentType.FINISH)
-    if any(keyword in text for keyword in CONFIRM_KEYWORDS):
+    if tokens & CONFIRM_KEYWORDS or any(keyword in text for keyword in CONFIRM_KEYWORDS):
         return Intent(IntentType.CONFIRM)
-    if any(keyword in text for keyword in EDIT_KEYWORDS):
+    if tokens & EDIT_KEYWORDS or any(keyword in text for keyword in EDIT_KEYWORDS):
         return Intent(IntentType.EDIT)
 
     indexed = _match_item(message, indexed_items)
     if indexed:
         quantity = _extract_quantity(message, indexed)
-        if any(keyword in text for keyword in REMOVE_KEYWORDS):
+        if tokens & REMOVE_KEYWORDS or any(keyword in text for keyword in REMOVE_KEYWORDS):
             return Intent(IntentType.REMOVE_ITEM, indexed.item, quantity)
         return Intent(IntentType.ADD_ITEM, indexed.item, quantity)
 
@@ -397,12 +525,6 @@ def _find_beverage_item(item_index: List[IndexedItem]) -> Optional[MenuItem]:
     return None
 
 
-def _response_with_notice(text: str, notice: Optional[str]) -> str:
-    if not notice:
-        return text
-    return f"{notice}\n\n{text}"
-
-
 def _coerce_step(state: Dict[str, Any]) -> ConversationStep:
     step_value = state.get("step")
     if step_value:
@@ -422,9 +544,10 @@ def _coerce_step(state: Dict[str, Any]) -> ConversationStep:
 
 
 class ConversationManager:
-    def __init__(self, config: RestaurantConfig, state: Dict[str, Any]) -> None:
+    def __init__(self, config: RestaurantConfig, state: Dict[str, Any], restaurant_slug: str) -> None:
         self.config = config
         self.state = state
+        self.restaurant_slug = restaurant_slug
         self.cart = CartManager(config, state.setdefault("cart", []))
         self.customer_info: Dict[str, Any] = state.setdefault("customer_info", {})
         self.item_index = _build_item_index(config)
@@ -437,8 +560,7 @@ class ConversationManager:
         self.state.pop("awaiting_info", None)
         self.state.pop("confirmed", None)
 
-        now = datetime.now(ZoneInfo("America/Sao_Paulo"))
-        self.closed_notice = None if is_open(config, now) else _closed_message(config, now)
+        self.closed_notice = None
 
     def handle_message(self, message: str) -> Dict[str, Any]:
         intent = parse_intent(message, self.item_index)
@@ -448,6 +570,9 @@ class ConversationManager:
 
         if self.step == ConversationStep.CONFIRMATION:
             return self._handle_confirmation(intent, message)
+
+        if self.step == ConversationStep.ORDERING and intent.type == IntentType.FINISH:
+            return self._finalize_order()
 
         return self._handle_general(intent, message)
 
@@ -511,24 +636,6 @@ class ConversationManager:
             "Para finalizar, responda 'sim'. Para mudar o pedido, diga 'editar'."
         )
 
-    def _split_multi_items(self, message: str) -> List[str]:
-        #separa por virgula ou "e" para tentar pegar multiplos itens em uma frase
-        parts = re.split(r",|\se\s", message, flags=re.IGNORECASE)
-        return [p.strip() for p in parts if p.strip()]
-    
-    def _parse_multiple_items(self, message: str, intent_type: IntentType) -> List[Intent]:
-        parts = self._split_multi_items(message)
-        intents: List[Intent] = []
-
-        for part in parts:
-            indexed = _match_item(part, self.item_index)
-            if not indexed:
-                continue
-            quantity = _extract_quantity(part, indexed)
-            intents.append(Intent(intent_type, indexed.item, quantity))
-
-        return intents
-    
     def _handle_general(self, intent: Intent, message: str) -> Dict[str, Any]:
         if intent.type == IntentType.SHOW_MENU:
             return self._build_response(_menu_text(self.config))
@@ -541,33 +648,27 @@ class ConversationManager:
                 return self._build_response("\n".join(promo_lines))
             return self._build_response("No momento nao temos promocoes ativas.")
 
-        # Trata multiplos apenas para ADD ou REMOVE
-        if intent.type in {IntentType.ADD_ITEM, IntentType.REMOVE_ITEM}:
-            # So entra se realmente for frase composta
-            if "," in message or " e " in message.lower():
-                multi_intents = self._parse_multiple_items(message, intent.type)
+        if intent.type == IntentType.ADD_ITEM and intent.item:
+            self.cart.add(intent.item.id, intent.quantity)
+            total = self.cart.total()
+            response_lines = [
+                f"Adicionado: {intent.quantity}x {intent.item.name}.",
+                f"Total parcial (com entrega): R$ {total:.2f}.",
+            ]
 
-                response_lines = []
+            for promo in self.config.promotions:
+                if promo.trigger == intent.item.id:
+                    response_lines.append(promo.message)
 
-                for multi_intent in multi_intents:
-                    if multi_intent.type == IntentType.ADD_ITEM:
-                        self.cart.add(multi_intent.item.id, multi_intent.quantity)
-                        response_lines.append(
-                            f"{multi_intent.quantity}x {multi_intent.item.name}"
-                        )
-                    else:
-                        self.cart.remove(multi_intent.item.id, multi_intent.quantity)
-                        response_lines.append(
-                            f"{multi_intent.quantity}x {multi_intent.item.name} removido"
-                        )
+            if not self.cart.has_beverage(self.item_index):
+                beverage = _find_beverage_item(self.item_index)
+                if beverage:
+                    response_lines.append(
+                        f"Quer adicionar {beverage.name} por R$ {beverage.price:.2f} para completar seu pedido?"
+                    )
 
-                total = self.cart.total()
-
-                return self._build_response(
-                    "Atualizacao do carrinho:\n• "
-                    + "\n• ".join(response_lines)
-                    + f"\n\nTotal atual (com entrega): R$ {total:.2f}."
-                )
+            response_lines.append("Se quiser finalizar, diga 'finalizar'.")
+            return self._build_response(" ".join(response_lines))
 
         if intent.type == IntentType.REMOVE_ITEM and intent.item:
             removed = self.cart.remove(intent.item.id, intent.quantity)
@@ -581,17 +682,6 @@ class ConversationManager:
             return self._build_response(
                 f"Removi {intent.quantity}x {intent.item.name}. Total atual: R$ {total:.2f}."
             )
-
-        if intent.type == IntentType.ADD_ITEM and intent.item:
-            self.cart.add(intent.item.id, intent.quantity)
-            total = self.cart.total()
-            final_text = (
-                "Adicionado ao carrinho:\n• "
-                f"{intent.quantity}x {intent.item.name}"
-                + f"\n\nTotal parcial (com entrega): R$ {total:.2f}.\n"
-                "Se quiser finalizar, diga 'finalizar'."
-            )
-            return self._build_response(final_text)
 
         if intent.type == IntentType.FINISH:
             if not self.cart.has_items():
@@ -645,55 +735,102 @@ class ConversationManager:
         if phone and not _normalize_phone(phone):
             return self._build_response("Telefone invalido. Pode enviar novamente?")
 
-        wa_message = build_whatsapp_message(self.config, self.cart.cart_state, self.customer_info)
-        wa_link = f"https://wa.me/{self.config.whatsapp_number}?text={quote(wa_message)}"
+        restaurant_id = self.state.get("restaurant_id") or get_restaurant_id()
+        if not restaurant_id:
+            raise Exception("Restaurant ID not configured")
+
+        print("DEBUG RESTAURANT ID:", restaurant_id)
+        delivery_fee = 5.00 # Valor Fixo temporário
+        items_payload = [
+            {
+                "product_id": None,
+                "product_name": item.name,
+                "quantity": quantity,
+                "unit_price": float(item.price),
+            }
+            for item, quantity in self.cart.items()
+        ]
+
+        items_payload.append(
+            {
+                "product_id": None,
+                "product_name": "Taxa de entrega",
+                "quantity": 1,
+                "unit_price": delivery_fee
+            }
+        )
+        payload = {
+            "customer_name": self.customer_info.get("name"),
+            "customer_phone": self.customer_info.get("phone"),
+            "restaurant_id": int(restaurant_id),
+            "delivery_fee": float(self.config.delivery_fee),
+            "items": items_payload,
+        }
+
+        order_id = self.state.get("order_id")
+        if not order_id:
+            order_id, error_message = _create_order(payload)
+            if error_message:
+                return self._build_response(error_message)
+            self.state["order_id"] = order_id
+
+        checkout_url, error_message = _create_checkout(int(order_id))
+        if error_message:
+            return self._build_response(error_message)
+
         self.step = ConversationStep.ORDERING
         self.state["step"] = self.step.value
         self.state.pop("pending_confirmation", None)
-        return self._build_response(
-            "Pedido confirmado! Clique no link para enviar via WhatsApp.", whatsapp_link=wa_link
-        )
+
+       # text = "Perfeito! Aqui esta seu link para pagamento:\n" + checkout_url
+        text = "Perfeito! Escolha a forma de pagamento:"
+        buttons = [
+            {"title": "Crédito", "url": checkout_url},
+            {"title": "Débito", "url": checkout_url},
+            {"title": "Pix", "url": checkout_url},
+        ]
+        return self._build_response(text, checkout_url=checkout_url, buttons=buttons)
 
     def _build_response(
-            self,
-            text: str,
-            whatsapp_link: Optional[str] = None,
-            include_notice: bool = False,
-        ) -> Dict[str, Any]:
-
-            final_text = text
-
-            if include_notice and self.closed_notice:
-                final_text = f"{self.closed_notice}\n\n{text}"
-
-            payload: Dict[str, Any] = {
-                "text": final_text,
-                "state": self.state,
-                "is_open": self.closed_notice is None,
-            }
-
-            if whatsapp_link:
-                payload["whatsapp_link"] = whatsapp_link
-
-            return payload
-
+        self,
+        text: str,
+        checkout_url: Optional[str] = None,
+        buttons: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        final_text = _response_with_notice(text, self.closed_notice)
+        payload: Dict[str, Any] = {
+            "text": final_text,
+            "message": final_text,
+            "response": final_text,
+            "state": self.state,
+        }
+        if "order_id" in self.state:
+            payload["order_id"] = self.state["order_id"]
+        if checkout_url:
+            payload["checkout_url"] = checkout_url
+        if buttons:
+            payload["buttons"] = buttons
+        return payload
 
 
 class RestaurantService:
-    def __init__(self, config_path: str) -> None:
+    def __init__(self, config_path: str | Path) -> None:
         # Carrega o arquivo de configuracao para uso em todo o fluxo
-        self.config = load_config(config_path)
+        self.config_path = Path(config_path)
+        self.config = load_config(str(self.config_path))
+        self.restaurant_slug = self.config_path.stem
 
     def process_message(self, message: str, state: Dict[str, Any]) -> Dict[str, Any]:
         # Estado compartilhado do pedido (carrinho e dados do cliente)
         if state is None:
             state = {}
 
+        # Se estiver fechado, encerra imediatamente sem alterar o estado.
         # Atualiza telefone se vier no texto em qualquer momento
         if message and _looks_like_phone(message):
             normalized_phone = _normalize_phone(message)
             if normalized_phone:
                 state.setdefault("customer_info", {})["phone"] = normalized_phone
 
-        manager = ConversationManager(self.config, state)
+        manager = ConversationManager(self.config, state, self.restaurant_slug)
         return manager.handle_message(message)

@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -35,6 +35,7 @@ class RestaurantConfig(BaseModel):
     name: str
     whatsapp_number: str
     delivery_fee: float
+    restaurant_id: Optional[int] = None
     opening_hours: Dict[str, str]
     menu: Dict[str, List[MenuItem]]
     promotions: List[PromotionRule]
