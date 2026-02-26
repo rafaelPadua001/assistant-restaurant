@@ -58,9 +58,11 @@ GENERIC_ITEM_TOKENS = {
     "media",
     "grande",
 }
+ORDER_CREATE_URL_DEFAULT = "https://pizzaria-demo.onrender.com/orders/public"
+CHECKOUT_URL_DEFAULT = "https://pizzaria-demo.onrender.com/api/orders/checkout"
 
-ORDER_CREATE_URL_DEFAULT = "http://localhost:8000/orders/public"
-CHECKOUT_URL_DEFAULT = "http://localhost:8000/api/orders/checkout"
+#ORDER_CREATE_URL_DEFAULT = "http://localhost:8000/orders/public"
+#CHECKOUT_URL_DEFAULT = "http://localhost:8000/api/orders/checkout"
 
 logger = logging.getLogger(__name__)
 
