@@ -76,6 +76,7 @@ class ConversationStep(str, Enum):
     CONFIRMATION = "confirmation"
     AWAITING_NAME = "awaiting_name"
     AWAITING_ADDRESS = "awaiting_address"
+    AWAITING_PHONE = 'awaiting_phone'
 
 
 class IntentType(str, Enum):
@@ -567,7 +568,7 @@ class ConversationManager:
     def handle_message(self, message: str) -> Dict[str, Any]:
         intent = parse_intent(message, self.item_index)
 
-        if self.step in {ConversationStep.AWAITING_NAME, ConversationStep.AWAITING_ADDRESS}:
+        if self.step in {ConversationStep.AWAITING_NAME, ConversationStep.AWAITING_ADDRESS, ConversationStep.AWAITING_PHONE}:
             return self._handle_customer_info(message, intent)
 
         if self.step == ConversationStep.CONFIRMATION:
@@ -579,7 +580,8 @@ class ConversationManager:
         return self._handle_general(intent, message)
 
     def _handle_customer_info(self, message: str, intent: Intent) -> Dict[str, Any]:
-        # Permite que o usuario veja menu ou adicione itens sem quebrar o fluxo
+
+        # Permite navegar no menu sem quebrar coleta
         if intent.type in {
             IntentType.SHOW_MENU,
             IntentType.SHOW_PROMOS,
@@ -593,30 +595,59 @@ class ConversationManager:
 
         if intent.type == IntentType.CONFIRM:
             return self._build_response(
-                "Antes de confirmar, preciso do seu nome e endereco."
+                "Antes de confirmar, preciso do seu nome, endereco e telefone."
             )
 
+        # -------------------------
+        # NOME
+        # -------------------------
         if self.step == ConversationStep.AWAITING_NAME:
             name = _extract_name(message) or message.strip()
             if not _is_valid_name(name):
                 return self._build_response("Nao consegui entender seu nome. Pode repetir?")
+
             self.customer_info["name"] = name
             self.step = ConversationStep.AWAITING_ADDRESS
             self.state["step"] = self.step.value
             return self._build_response("Obrigado! Qual o endereco para entrega?")
 
-        address = _extract_address(message) or message.strip()
-        if not _is_valid_address(address):
-            return self._build_response("Endereco invalido. Pode enviar novamente?")
-        self.customer_info["address"] = address
-        self.step = ConversationStep.ORDERING
-        self.state["step"] = self.step.value
+        # -------------------------
+        # ENDEREÇO
+        # -------------------------
+        elif self.step == ConversationStep.AWAITING_ADDRESS:
+            address = _extract_address(message) or message.strip()
+            if not _is_valid_address(address):
+                return self._build_response("Endereco invalido. Pode enviar novamente?")
 
-        if self.state.get("pending_confirmation"):
-            self.state.pop("pending_confirmation", None)
-            return self._finalize_order()
+            self.customer_info["address"] = address
+            self.step = ConversationStep.AWAITING_PHONE
+            self.state["step"] = self.step.value
+            return self._build_response(
+                "Perfeito! Qual o seu WhatsApp para enviarmos atualizacoes do pedido?"
+            )
 
-        return self._build_response("Perfeito! Posso ajudar com mais algum item?")
+        # -------------------------
+        # TELEFONE
+        # -------------------------
+        elif self.step == ConversationStep.AWAITING_PHONE:
+            phone = _normalize_phone(message)
+            if not phone:
+                return self._build_response("Telefone invalido. Pode enviar novamente?")
+
+            self.customer_info["phone"] = phone
+
+            # Se usuário já estava finalizando, finalize direto
+            if self.cart.has_items():
+                self.step = ConversationStep.ORDERING
+                self.state["step"] = self.step.value
+                return self._finalize_order()
+
+            self.step = ConversationStep.ORDERING
+            self.state["step"] = self.step.value
+            return self._build_response("Telefone registrado! Posso ajudar com mais algum item?")
+
+        # Fallback de segurança
+        return self._build_response("Posso te ajudar com algo mais?")
 
     def _handle_confirmation(self, intent: Intent, message: str) -> Dict[str, Any]:
         if intent.type == IntentType.CONFIRM:
@@ -733,6 +764,12 @@ class ConversationManager:
             self.state["pending_confirmation"] = True
             return self._build_response("Qual o endereco para entrega?")
 
+        if not self.customer_info.get('phone'):
+            self.step = ConversationStep.AWAITING_PHONE
+            self.state["step"] = self.step.value
+            self.state['pendig_confirmation'] = True
+            return self._build_response('Qual o seu WhatsApp para enviarmos atualizações do pedido ?')
+        
         phone = self.customer_info.get("phone")
         if phone and not _normalize_phone(phone):
             return self._build_response("Telefone invalido. Pode enviar novamente?")
