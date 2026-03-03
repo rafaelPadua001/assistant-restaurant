@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import uuid
 from dotenv import load_dotenv
 import re
 import unicodedata
@@ -801,6 +802,7 @@ class ConversationManager:
         payload = {
             "customer_name": self.customer_info.get("name"),
             "customer_phone": self.customer_info.get("phone"),
+            "session_id": self.state.get("session_id"),
             "restaurant_id": int(restaurant_id),
             "delivery_fee": float(self.config.delivery_fee),
             "items": items_payload,
@@ -863,6 +865,8 @@ class RestaurantService:
         # Estado compartilhado do pedido (carrinho e dados do cliente)
         if state is None:
             state = {}
+        if not state.get("session_id"):
+            state["session_id"] = str(uuid.uuid4())
 
         # Se estiver fechado, encerra imediatamente sem alterar o estado.
         # Atualiza telefone se vier no texto em qualquer momento
