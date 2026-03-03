@@ -1,7 +1,11 @@
 ﻿from typing import Any, Dict
 
 from fastapi import FastAPI
+from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from threading import Lock
+from datetime import datetime
+from typing import List
 
 from verticals.restaurant.service import RestaurantService
 
@@ -9,6 +13,8 @@ from pathlib import Path
 
 app = FastAPI()
 BASE_DIR = Path(__file__).resolve().parent
+_NOTIFICATIONS: Dict[str, List[Dict[str, Any]]] = {}
+_NOTIFICATIONS_LOCK = Lock()
 
 # CORS para permitir chamadas do frontend local (file:// ou http://localhost)
 app.add_middleware(
@@ -58,3 +64,33 @@ async def restaurant_chat(restaurant_id: str, body: Dict[str, Any]) -> Dict[str,
         response["whatsapp_link"] = result["whatsapp_link"]
 
     return response
+
+
+@app.post("/assistant/notify")
+async def assistant_notify(body: Dict[str, Any]) -> Dict[str, Any]:
+    session_id = str(body.get("session_id") or "").strip()
+    message = str(body.get("message") or "").strip()
+    if not session_id or not message:
+        raise HTTPException(status_code=400, detail="session_id and message required")
+
+    payload = {
+        "message": message,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+    with _NOTIFICATIONS_LOCK:
+        _NOTIFICATIONS.setdefault(session_id, []).append(payload)
+
+    return {"status": "ok"}
+
+
+@app.get("/assistant/notifications/{session_id}")
+async def assistant_notifications(session_id: str) -> Dict[str, Any]:
+    session_id = session_id.strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id required")
+
+    with _NOTIFICATIONS_LOCK:
+        messages = _NOTIFICATIONS.pop(session_id, [])
+
+    return {"messages": messages}
