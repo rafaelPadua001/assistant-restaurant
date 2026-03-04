@@ -1,5 +1,7 @@
 ﻿from typing import Any, Dict
 
+import re
+
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +17,7 @@ app = FastAPI()
 BASE_DIR = Path(__file__).resolve().parent
 _NOTIFICATIONS: Dict[str, List[Dict[str, Any]]] = {}
 _NOTIFICATIONS_LOCK = Lock()
+_SESSION_FLAGS: Dict[str, Dict[str, Any]] = {}
 
 # CORS para permitir chamadas do frontend local (file:// ou http://localhost)
 app.add_middleware(
@@ -29,6 +32,16 @@ app.add_middleware(
 async def restaurant_chat(restaurant_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     message = body.get("message", "")
     state = body.get("state", {}) or {}
+
+    session_id = str(state.get("session_id") or "").strip()
+    if session_id:
+        with _NOTIFICATIONS_LOCK:
+            flags = _SESSION_FLAGS.get(session_id)
+        if flags and flags.get("order_paid"):
+            state["step"] = "order_completed"
+            state["order_paid"] = True
+            if flags.get("order_id") and not state.get("order_id"):
+                state["order_id"] = flags["order_id"]
     service = RestaurantService(
         config_path=BASE_DIR / "verticals" / "restaurant" / "config" / f"{restaurant_id}.json"
     )
@@ -80,6 +93,17 @@ async def assistant_notify(body: Dict[str, Any]) -> Dict[str, Any]:
 
     with _NOTIFICATIONS_LOCK:
         _NOTIFICATIONS.setdefault(session_id, []).append(payload)
+
+    order_id_match = re.search(r"pedido\s*#(\d+)", message, re.IGNORECASE)
+    status_match = re.search(r"status atualizado:\s*([A-Z0-9_]+)", message, re.IGNORECASE)
+    if status_match:
+        status_value = status_match.group(1).strip().upper()
+        if status_value in {"PAID", "APPROVED", "APROVADO", "CONFIRMED", "PAGO"}:
+            with _NOTIFICATIONS_LOCK:
+                _SESSION_FLAGS[session_id] = {
+                    "order_paid": True,
+                    "order_id": int(order_id_match.group(1)) if order_id_match else None,
+                }
 
     return {"status": "ok"}
 

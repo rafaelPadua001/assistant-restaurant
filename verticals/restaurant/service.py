@@ -78,7 +78,8 @@ class ConversationStep(str, Enum):
     AWAITING_NAME = "awaiting_name"
     AWAITING_ADDRESS = "awaiting_address"
     AWAITING_PHONE = 'awaiting_phone'
-
+    AWAITING_PAYMENT = "awaiting_payment"
+    ORDER_COMPLETED = "order_completed"
 
 class IntentType(str, Enum):
     SHOW_MENU = "show_menu"
@@ -88,6 +89,7 @@ class IntentType(str, Enum):
     EDIT = "edit"
     ADD_ITEM = "add_item"
     REMOVE_ITEM = "remove_item"
+    NEW_ORDER = "new_order"
     UNKNOWN = "unknown"
 
 
@@ -432,6 +434,9 @@ def parse_intent(message: str, indexed_items: List[IndexedItem]) -> Intent:
     text = _normalize_text(message)
     tokens = set(text.split())
 
+    if "novo pedido" in text:
+        return Intent(IntentType.NEW_ORDER)
+
     if tokens & MENU_KEYWORDS or any(keyword in text for keyword in MENU_KEYWORDS):
         return Intent(IntentType.SHOW_MENU)
     if tokens & PROMO_KEYWORDS or any(keyword in text for keyword in PROMO_KEYWORDS):
@@ -544,6 +549,8 @@ def _coerce_step(state: Dict[str, Any]) -> ConversationStep:
         return ConversationStep.AWAITING_NAME
     if awaiting_info == "address":
         return ConversationStep.AWAITING_ADDRESS
+    if awaiting_info == "payment":
+        return ConversationStep.AWAITING_PAYMENT
     return ConversationStep.ORDERING
 
 
@@ -568,6 +575,23 @@ class ConversationManager:
 
     def handle_message(self, message: str) -> Dict[str, Any]:
         intent = parse_intent(message, self.item_index)
+
+        if intent.type == IntentType.NEW_ORDER:
+            return self._start_new_order()
+
+        if self.step == ConversationStep.AWAITING_PAYMENT:
+            return self._build_response(
+                "Seu pedido foi enviado para pagamento.\n"
+                "Assim que o pagamento for confirmado, avisaremos aqui.\n\n"
+                "Se precisar de algo, digite 'novo pedido'."
+            )
+
+        if self.step == ConversationStep.ORDER_COMPLETED:
+            return self._build_response(
+                f"🍕 Pedido #{self.state.get('order_id')} confirmado!\n"
+                "Obrigado pela preferencia 🙌\n\n"
+                "Para fazer um novo pedido, digite 'novo pedido'."
+            )
 
         if self.step in {ConversationStep.AWAITING_NAME, ConversationStep.AWAITING_ADDRESS, ConversationStep.AWAITING_PHONE}:
             return self._handle_customer_info(message, intent)
@@ -649,6 +673,20 @@ class ConversationManager:
 
         # Fallback de segurança
         return self._build_response("Posso te ajudar com algo mais?")
+
+    def _start_new_order(self) -> Dict[str, Any]:
+        self.state.clear()
+        self.state["session_id"] = str(uuid.uuid4())
+        self.state["cart"] = []
+        self.state["customer_info"] = {}
+        self.step = ConversationStep.ORDERING
+        self.state["step"] = self.step.value
+        self.cart = CartManager(self.config, self.state["cart"])
+        self.customer_info = self.state["customer_info"]
+        return self._build_response(
+            "Perfeito! Vamos comecar um novo pedido.\n"
+            "Digite 'menu' para ver as opcoes."
+        )
 
     def _handle_confirmation(self, intent: Intent, message: str) -> Dict[str, Any]:
         if intent.type == IntentType.CONFIRM:
@@ -768,7 +806,7 @@ class ConversationManager:
         if not self.customer_info.get('phone'):
             self.step = ConversationStep.AWAITING_PHONE
             self.state["step"] = self.step.value
-            self.state['pendig_confirmation'] = True
+            self.state['pending_confirmation'] = True
             return self._build_response('Qual o seu WhatsApp para enviarmos atualizações do pedido ?')
         
         phone = self.customer_info.get("phone")
@@ -819,7 +857,7 @@ class ConversationManager:
         if error_message:
             return self._build_response(error_message)
 
-        self.step = ConversationStep.ORDERING
+        self.step = ConversationStep.AWAITING_PAYMENT
         self.state["step"] = self.step.value
         self.state.pop("pending_confirmation", None)
 
