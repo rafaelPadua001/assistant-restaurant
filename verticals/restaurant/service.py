@@ -579,14 +579,31 @@ class ConversationManager:
         if intent.type == IntentType.NEW_ORDER:
             return self._start_new_order()
 
+        normalized = _normalize_text(message)
+
         if self.step == ConversationStep.AWAITING_PAYMENT:
             return self._build_response(
-                "Seu pedido foi enviado para pagamento.\n"
-                "Assim que o pagamento for confirmado, avisaremos aqui.\n\n"
-                "Se precisar de algo, digite 'novo pedido'."
+                "Seu pedido esta aguardando confirmacao de pagamento.\n"
+                "Assim que for aprovado, avisaremos aqui.\n\n"
+                "Se quiser cancelar e comecar novamente, digite 'novo pedido'."
             )
 
         if self.step == ConversationStep.ORDER_COMPLETED:
+            if "novo pedido" in normalized:
+                self.state.clear()
+                self.state["session_id"] = str(uuid.uuid4())
+                self.state["step"] = ConversationStep.ORDERING.value
+                return self._build_response(
+                    "Perfeito! Vamos comecar um novo pedido.\n"
+                    "Digite 'menu' para ver as opcoes."
+                )
+
+            if "status" in normalized:
+                order_id = self.state.get("order_id")
+                return self._build_response(
+                    f"O pedido #{order_id} ja esta confirmado e pago ✅"
+                )
+
             return self._build_response(
                 f"🍕 Pedido #{self.state.get('order_id')} confirmado!\n"
                 "Obrigado pela preferencia 🙌\n\n"
