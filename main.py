@@ -104,7 +104,8 @@ async def assistant_notify(body: Dict[str, Any]) -> Dict[str, Any]:
                     "order_paid": True,
                     "order_id": int(order_id_match.group(1)) if order_id_match else None,
                 }
-
+    print("NOTIFY RECEBIDO:", body)
+    print("NOTIFICATIONS:", _NOTIFICATIONS)
     return {"status": "ok"}
 
 
@@ -113,8 +114,9 @@ async def assistant_notifications(session_id: str) -> Dict[str, Any]:
     session_id = session_id.strip()
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id required")
-
+   
     with _NOTIFICATIONS_LOCK:
-        messages = _NOTIFICATIONS.get(session_id, [])
-
+        messages = _NOTIFICATIONS.get(session_id, []).copy()
+        _NOTIFICATIONS[session_id] = []
+ 
     return {"messages": messages}
