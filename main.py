@@ -115,6 +115,6 @@ async def assistant_notifications(session_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="session_id required")
 
     with _NOTIFICATIONS_LOCK:
-        messages = _NOTIFICATIONS.pop(session_id, [])
+        messages = _NOTIFICATIONS.get(session_id, [])
 
     return {"messages": messages}
