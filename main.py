@@ -3,7 +3,7 @@
 import re
 
 from fastapi import FastAPI
-from fastapi import HTTPException
+from fastapi import Query
 from fastapi.middleware.cors import CORSMiddleware
 from threading import Lock
 from datetime import datetime
@@ -15,8 +15,8 @@ from pathlib import Path
 
 app = FastAPI()
 BASE_DIR = Path(__file__).resolve().parent
-_NOTIFICATIONS: Dict[str, List[Dict[str, Any]]] = {}
-_NOTIFICATIONS_LOCK = Lock()
+notifications_store: dict[str, list[dict[str, Any]]] = {}
+notifications_lock = Lock()
 _SESSION_FLAGS: Dict[str, Dict[str, Any]] = {}
 
 # CORS para permitir chamadas do frontend local (file:// ou http://localhost)
@@ -35,7 +35,7 @@ async def restaurant_chat(restaurant_id: str, body: Dict[str, Any]) -> Dict[str,
 
     session_id = str(state.get("session_id") or "").strip()
     if session_id:
-        with _NOTIFICATIONS_LOCK:
+        with notifications_lock:
             flags = _SESSION_FLAGS.get(session_id)
         if flags and flags.get("order_paid"):
             state["step"] = "order_completed"
@@ -82,44 +82,60 @@ async def restaurant_chat(restaurant_id: str, body: Dict[str, Any]) -> Dict[str,
 @app.post("/assistant/notify")
 async def assistant_notify(body: Dict[str, Any]) -> Dict[str, Any]:
     session_id = str(body.get("session_id") or "").strip()
+    if not session_id:
+        return {"status": "ignored"}
+
+    status_value = str(body.get("status") or "").strip().upper()
+    order_id_raw = body.get("order_id")
     message = str(body.get("message") or "").strip()
-    if not session_id or not message:
-        raise HTTPException(status_code=400, detail="session_id and message required")
+    if not message and order_id_raw is not None and status_value:
+        message = f"Pagamento do pedido {order_id_raw} atualizado para {status_value.lower()}"
 
-    payload = {
-        "message": message,
-        "created_at": datetime.utcnow().isoformat(),
-    }
+    payload: Dict[str, Any] = dict(body)
+    payload["session_id"] = session_id
+    payload["message"] = message
+    payload["created_at"] = str(payload.get("created_at") or datetime.utcnow().isoformat())
 
-    with _NOTIFICATIONS_LOCK:
-        _NOTIFICATIONS.setdefault(session_id, []).append(payload)
+    with notifications_lock:
+        notifications_store.setdefault(session_id, []).append(payload)
 
     order_id_match = re.search(r"pedido\s*#(\d+)", message, re.IGNORECASE)
-    status_match = re.search(r"status atualizado:\s*([A-Z0-9_]+)", message, re.IGNORECASE)
-    if status_match:
-        status_value = status_match.group(1).strip().upper()
-        if status_value in {"PAID", "APPROVED", "APROVADO", "CONFIRMED", "PAGO"}:
-            with _NOTIFICATIONS_LOCK:
-                _SESSION_FLAGS[session_id] = {
-                    "order_paid": True,
-                    "order_id": int(order_id_match.group(1)) if order_id_match else None,
-                }
+    if not status_value:
+        status_match = re.search(r"status atualizado:\s*([A-Z0-9_]+)", message, re.IGNORECASE)
+        if status_match:
+            status_value = status_match.group(1).strip().upper()
+    if status_value in {"PAID", "APPROVED", "APROVADO", "CONFIRMED", "PAGO"}:
+        if isinstance(order_id_raw, int):
+            order_id = order_id_raw
+        elif isinstance(order_id_raw, str) and order_id_raw.isdigit():
+            order_id = int(order_id_raw)
+        elif order_id_match:
+            order_id = int(order_id_match.group(1))
+        else:
+            order_id = None
+        with notifications_lock:
+            _SESSION_FLAGS[session_id] = {
+                "order_paid": True,
+                "order_id": order_id,
+            }
     print("NOTIFY RECEBIDO:", body)
-    print("NOTIFICATIONS:", _NOTIFICATIONS)
-    return {
-        "status": "ok",
-        "notifications": _NOTIFICATIONS.get(session_id, [])
-    }
+    print("NOTIFICATIONS:", notifications_store)
+    return {"status": "ok"}
+
+
+@app.get("/assistant/notifications")
+async def assistant_notifications(session_id: str = Query(default="")) -> Dict[str, Any]:
+    session_id = str(session_id or "").strip()
+    if not session_id:
+        return {"notifications": []}
+
+    with notifications_lock:
+        notifications = notifications_store.get(session_id, []).copy()
+        notifications_store[session_id] = []
+
+    return {"notifications": notifications}
 
 
 @app.get("/assistant/notifications/{session_id}")
-async def assistant_notifications(session_id: str) -> Dict[str, Any]:
-    session_id = session_id.strip()
-    if not session_id:
-        raise HTTPException(status_code=400, detail="session_id required")
-   
-    with _NOTIFICATIONS_LOCK:
-        messages = _NOTIFICATIONS.get(session_id, []).copy()
-        _NOTIFICATIONS[session_id] = []
- 
-    return {"messages": messages}
+async def assistant_notifications_legacy(session_id: str) -> Dict[str, Any]:
+    return await assistant_notifications(session_id=session_id)
