@@ -106,7 +106,10 @@ async def assistant_notify(body: Dict[str, Any]) -> Dict[str, Any]:
                 }
     print("NOTIFY RECEBIDO:", body)
     print("NOTIFICATIONS:", _NOTIFICATIONS)
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "notifications": _NOTIFICATIONS.get(session_id, [])
+    }
 
 
 @app.get("/assistant/notifications/{session_id}")
