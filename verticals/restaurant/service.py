@@ -17,6 +17,7 @@ from urllib import request as url_request
 
 from .config_schema import MenuItem, RestaurantConfig
 from .tools import calculate_total, find_menu_item, load_config
+from services.menu_api_client import get_menu
 
 load_dotenv()
 
@@ -146,30 +147,165 @@ def _token_matches_item(token: str, item_token: str) -> bool:
     return False
 
 
-def _menu_category_emoji(category: str) -> str:
-    label = category.lower()
-    if "pizza" in label:
-        return "🍕"
-    if "bebida" in label or "drink" in label or "refri" in label or "refrigerante" in label:
-        return "🥤"
-    if "sobremesa" in label or "doce" in label:
-        return "🍰"
-    if "combo" in label:
-        return "🎁"
-    return "📋"
+def _format_price(value: Any) -> str:
+    try:
+        price = float(value)
+    except (TypeError, ValueError):
+        return "R$ --"
+    formatted = f"{price:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"R$ {formatted}"
 
 
-def _menu_text(config: RestaurantConfig) -> str:
-    lines: List[str] = ["Cardapio:"]
-    for category, items in config.menu.items():
-        emoji = _menu_category_emoji(category)
-        lines.append(f"\n{emoji} {category.upper()}:")
-        for item in items:
-            description = f" — {item.description}" if item.description else ""
-            lines.append(
-                f"• {item.id} — {item.name} (R$ {item.price:.2f}){description}"
-            )
+def _menu_text_from_menu(menu: Dict[str, List[MenuItem]]) -> str:
+    if not menu:
+        return "Nenhum produto cadastrado no momento."
+
+    lines: List[str] = []
+    for category in sorted(menu.keys(), key=lambda name: name.lower()):
+        items = menu.get(category) or []
+        if not items:
+            continue
+        items_sorted = sorted(items, key=lambda item: item.name.lower())
+        lines.append(f"{category.upper()}:")
+        for item in items_sorted:
+            name = item.name.strip()
+            if not name:
+                continue
+            description = (item.description or "").strip()
+            price_text = _format_price(item.price)
+            line = f"• {name} — {price_text}"
+            if description:
+                line += f" — {description}"
+            lines.append(line)
+        lines.append("")
+
+    if not lines:
+        return "Nenhum produto cadastrado no momento."
+
+    if lines[-1] == "":
+        lines.pop()
     return "\n".join(lines)
+
+
+def _build_menu_from_api(menu_data: Optional[dict] = None) -> Dict[str, List[MenuItem]]:
+    menu = menu_data if menu_data is not None else get_menu()
+    print("[assistant] resposta bruta da API:", menu)
+    if not menu:
+        logger.warning("[assistant] menu da API vazio")
+        return {"categories": []}
+
+    def _coerce_price(raw_value: Any) -> Optional[float]:
+        if raw_value is None:
+            return None
+        try:
+            raw_text = str(raw_value).strip()
+            if not raw_text:
+                return None
+            raw_text = raw_text.replace(",", ".")
+            return float(raw_text)
+        except (TypeError, ValueError):
+            return None
+
+    def _build_item(product: Dict[str, Any]) -> Optional[MenuItem]:
+        if not isinstance(product, dict):
+            return None
+        item_name = str(product.get("name") or "").strip()
+        if not item_name:
+            return None
+        price = _coerce_price(product.get("price"))
+        if price is None:
+            return None
+        raw_id = product.get("id")
+        item_id = str(raw_id) if raw_id is not None else item_name
+        description = str(product.get("description") or "").strip()
+        return MenuItem(
+            id=item_id,
+            name=item_name,
+            price=price,
+            description=description,
+        )
+
+    api_menu: Dict[str, List[MenuItem]] = {}
+    total_items = 0
+
+    if isinstance(menu, dict) and isinstance(menu.get("categories"), list):
+        categories_list = [category for category in menu.get("categories") if isinstance(category, dict)]
+        for category in categories_list:
+            name = str(category.get("name") or category.get("category") or "").strip()
+            if not name:
+                continue
+            products = category.get("products") or category.get("items") or []
+            if not isinstance(products, list):
+                continue
+            items: List[MenuItem] = []
+            for product in products:
+                item = _build_item(product)
+                if item is None:
+                    continue
+                items.append(item)
+            if items:
+                items.sort(key=lambda item: item.name.lower())
+                api_menu[name] = items
+                total_items += len(items)
+    elif isinstance(menu, dict) and isinstance(menu.get("menu"), list):
+        entries = [entry for entry in menu.get("menu") if isinstance(entry, dict)]
+        for entry in entries:
+            name = str(entry.get("category") or entry.get("name") or "").strip()
+            if not name:
+                continue
+            products = entry.get("items") or entry.get("products") or []
+            if not isinstance(products, list):
+                continue
+            items: List[MenuItem] = []
+            for product in products:
+                item = _build_item(product)
+                if item is None:
+                    continue
+                items.append(item)
+            if items:
+                items.sort(key=lambda item: item.name.lower())
+                api_menu[name] = items
+                total_items += len(items)
+    elif isinstance(menu, dict) and isinstance(menu.get("items"), list):
+        products = menu.get("items") or []
+        category_map: Dict[str, List[MenuItem]] = {}
+        for product in products:
+            if not isinstance(product, dict):
+                continue
+            category_name = str(product.get("category") or "Itens").strip()
+            item = _build_item(product)
+            if item is None:
+                continue
+            category_map.setdefault(category_name, []).append(item)
+        for category_name, items in category_map.items():
+            if not items:
+                continue
+            items.sort(key=lambda item: item.name.lower())
+            api_menu[category_name] = items
+            total_items += len(items)
+    elif isinstance(menu, list):
+        category_map: Dict[str, List[MenuItem]] = {}
+        for product in menu:
+            if not isinstance(product, dict):
+                continue
+            category_name = str(product.get("category") or "Itens").strip()
+            item = _build_item(product)
+            if item is None:
+                continue
+            category_map.setdefault(category_name, []).append(item)
+        for category_name, items in category_map.items():
+            if not items:
+                continue
+            items.sort(key=lambda item: item.name.lower())
+            api_menu[category_name] = items
+            total_items += len(items)
+
+    print("[assistant] produtos processados:", total_items)
+    logger.info("[assistant] categorias processadas: %s", len(api_menu))
+    if not api_menu:
+        logger.warning("[assistant] menu da API vazio")
+        return {"categories": []}
+    return api_menu
 
 
 def _build_item_index(config: RestaurantConfig) -> List[IndexedItem]:
@@ -193,6 +329,46 @@ def _build_item_index(config: RestaurantConfig) -> List[IndexedItem]:
                 )
             )
     return items
+
+
+def _build_item_index_from_menu(menu: Dict[str, List[MenuItem]]) -> List[IndexedItem]:
+    items: List[IndexedItem] = []
+    for category, entries in menu.items():
+        for item in entries:
+            id_norm = _normalize_text(item.id)
+            name_norm = _normalize_text(item.name)
+            tokens = tuple(
+                token
+                for token in _tokenize(item.name)
+                if token not in GENERIC_ITEM_TOKENS
+            )
+            items.append(
+                IndexedItem(
+                    item=item,
+                    category=category,
+                    id_norm=id_norm,
+                    name_norm=name_norm,
+                    tokens=tokens,
+                )
+            )
+    return items
+
+
+def _build_item_index_from_api(menu_data: Optional[dict] = None) -> List[IndexedItem]:
+    menu = _build_menu_from_api(menu_data)
+    if not menu:
+        return []
+    return _build_item_index_from_menu(menu)
+
+
+def _menu_text(config: RestaurantConfig) -> str:
+    return _menu_text_from_menu(config.menu)
+
+
+def _menu_is_empty(menu: Dict[str, List[MenuItem]]) -> bool:
+    if not menu:
+        return True
+    return all(not items for items in menu.values())
 
 
 def _match_item(text: str, indexed_items: List[IndexedItem]) -> Optional[IndexedItem]:
@@ -329,23 +505,38 @@ def _create_order(payload: Dict[str, Any]) -> Tuple[Optional[int], Optional[str]
     request.add_header("Content-Type", "application/json")
     request.add_header("X-API-KEY", api_key)
 
-    try:
-        logger.info("Payload enviado para criacao de pedido: %s", payload)
-        with url_request.urlopen(request, timeout=10) as response:
-            response_body = response.read().decode("utf-8")
-            status = response.status
-    except url_error.HTTPError as exc:
-        response_body = exc.read().decode("utf-8") if exc.fp else ""
-        logger.error(
-            "Erro HTTP ao criar pedido (status=%s): %s", exc.code, response_body
-        )
-        return None, "Nao consegui registrar seu pedido agora. Tente novamente."
-    except url_error.URLError as exc:
-        logger.error("Falha de conexao ao criar pedido: %s", exc.reason)
-        return None, "Nao consegui registrar seu pedido agora. Tente novamente."
-    except Exception:
-        logger.exception("Erro inesperado ao criar o pedido.")
-        return None, "Nao consegui registrar seu pedido agora. Tente novamente."
+    response_body = ""
+    status = None
+    max_attempts = 3
+    timeout_seconds = 30
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            logger.info("Payload enviado para criacao de pedido (tentativa %s): %s", attempt, payload)
+            with url_request.urlopen(request, timeout=timeout_seconds) as response:
+                response_body = response.read().decode("utf-8")
+                status = response.status
+            break
+        except url_error.HTTPError as exc:
+            response_body = exc.read().decode("utf-8") if exc.fp else ""
+            logger.error(
+                "Erro HTTP ao criar pedido (status=%s): %s", exc.code, response_body
+            )
+            return None, "Nao consegui registrar seu pedido agora. Tente novamente."
+        except url_error.URLError as exc:
+            reason_text = str(getattr(exc, "reason", exc))
+            logger.error("Falha de conexao ao criar pedido: %s", reason_text)
+            if attempt < max_attempts:
+                continue
+            return None, "Nao consegui conectar ao servidor. Tente novamente em alguns instantes."
+        except TimeoutError:
+            logger.error("Timeout ao criar pedido (tentativa %s).", attempt)
+            if attempt < max_attempts:
+                continue
+            return None, "A requisicao demorou demais. Tente novamente em alguns instantes."
+        except Exception:
+            logger.exception("Erro inesperado ao criar o pedido.")
+            return None, "Nao consegui registrar seu pedido agora. Tente novamente."
 
     logger.info("Resposta criar pedido (status=%s): %s", status, response_body)
 
@@ -484,7 +675,13 @@ class CartManager:
         return False
 
     def has_items(self) -> bool:
-        return any(entry.get("id") for entry in self.cart_state)
+        for entry in self.cart_state:
+            item_id = entry.get("id")
+            if not item_id:
+                continue
+            if find_menu_item(self.config, item_id) is not None:
+                return True
+        return False
 
     def items(self) -> List[Tuple[MenuItem, int]]:
         result: List[Tuple[MenuItem, int]] = []
@@ -561,7 +758,15 @@ class ConversationManager:
         self.restaurant_slug = restaurant_slug
         self.cart = CartManager(config, state.setdefault("cart", []))
         self.customer_info: Dict[str, Any] = state.setdefault("customer_info", {})
-        self.item_index = _build_item_index(config)
+        menu_data = get_menu()
+        api_menu = _build_menu_from_api(menu_data)
+        if api_menu.get("categories") == [] and len(api_menu) == 1:
+            self.config.menu = {}
+            self.item_index = []
+        else:
+            self.config.menu = api_menu
+            self.item_index = _build_item_index_from_menu(self.config.menu) if self.config.menu else []
+        print("[assistant] item index carregado da API")
 
         self.step = _coerce_step(state)
         self.state["step"] = self.step.value
@@ -572,6 +777,17 @@ class ConversationManager:
         self.state.pop("confirmed", None)
 
         self.closed_notice = None
+
+    def reload_menu_index(self) -> None:
+        menu_data = get_menu()
+        api_menu = _build_menu_from_api(menu_data)
+        if api_menu.get("categories") == [] and len(api_menu) == 1:
+            self.config.menu = {}
+            self.item_index = []
+        else:
+            self.config.menu = api_menu
+            self.item_index = _build_item_index_from_menu(self.config.menu) if self.config.menu else []
+        print("[assistant] item index carregado da API")
 
     def handle_message(self, message: str) -> Dict[str, Any]:
         intent = parse_intent(message, self.item_index)
@@ -601,12 +817,12 @@ class ConversationManager:
             if "status" in normalized:
                 order_id = self.state.get("order_id")
                 return self._build_response(
-                    f"O pedido #{order_id} ja esta confirmado e pago ✅"
+                    f"O pedido #{order_id} ja esta confirmado e pago ?"
                 )
 
             return self._build_response(
-                f"🍕 Pedido #{self.state.get('order_id')} confirmado!\n"
-                "Obrigado pela preferencia 🙌\n\n"
+                f"?? Pedido #{self.state.get('order_id')} confirmado!\n"
+                "Obrigado pela preferencia ??\n\n"
                 "Para fazer um novo pedido, digite 'novo pedido'."
             )
 
@@ -622,23 +838,7 @@ class ConversationManager:
         return self._handle_general(intent, message)
 
     def _handle_customer_info(self, message: str, intent: Intent) -> Dict[str, Any]:
-
-        # Permite navegar no menu sem quebrar coleta
-        if intent.type in {
-            IntentType.SHOW_MENU,
-            IntentType.SHOW_PROMOS,
-            IntentType.ADD_ITEM,
-            IntentType.REMOVE_ITEM,
-        }:
-            response = self._handle_general(intent, message)
-            reminder = self._missing_info_prompt()
-            response["text"] = f"{response['text']}\n\n{reminder}"
-            return response
-
-        if intent.type == IntentType.CONFIRM:
-            return self._build_response(
-                "Antes de confirmar, preciso do seu nome, endereco e telefone."
-            )
+        # Durante a coleta de dados, nao processa carrinho nem upsell.
 
         # -------------------------
         # NOME
@@ -656,7 +856,7 @@ class ConversationManager:
         # -------------------------
         # ENDEREÇO
         # -------------------------
-        elif self.step == ConversationStep.AWAITING_ADDRESS:
+        if self.step == ConversationStep.AWAITING_ADDRESS:
             address = _extract_address(message) or message.strip()
             if not _is_valid_address(address):
                 return self._build_response("Endereco invalido. Pode enviar novamente?")
@@ -671,22 +871,13 @@ class ConversationManager:
         # -------------------------
         # TELEFONE
         # -------------------------
-        elif self.step == ConversationStep.AWAITING_PHONE:
+        if self.step == ConversationStep.AWAITING_PHONE:
             phone = _normalize_phone(message)
             if not phone:
                 return self._build_response("Telefone invalido. Pode enviar novamente?")
 
             self.customer_info["phone"] = phone
-
-            # Se usuário já estava finalizando, finalize direto
-            if self.cart.has_items():
-                self.step = ConversationStep.ORDERING
-                self.state["step"] = self.step.value
-                return self._finalize_order()
-
-            self.step = ConversationStep.ORDERING
-            self.state["step"] = self.step.value
-            return self._build_response("Telefone registrado! Posso ajudar com mais algum item?")
+            return self._finalize_order()
 
         # Fallback de segurança
         return self._build_response("Posso te ajudar com algo mais?")
@@ -706,6 +897,11 @@ class ConversationManager:
         )
 
     def _handle_confirmation(self, intent: Intent, message: str) -> Dict[str, Any]:
+        if _menu_is_empty(self.config.menu):
+            self.step = ConversationStep.ORDERING
+            self.state["step"] = self.step.value
+            return self._build_response("Nenhum produto cadastrado no momento.")
+
         if intent.type == IntentType.CONFIRM:
             return self._finalize_order()
         if intent.type == IntentType.EDIT:
@@ -726,6 +922,17 @@ class ConversationManager:
         )
 
     def _handle_general(self, intent: Intent, message: str) -> Dict[str, Any]:
+        if _menu_is_empty(self.config.menu):
+            if intent.type in {
+                IntentType.SHOW_MENU,
+                IntentType.ADD_ITEM,
+                IntentType.REMOVE_ITEM,
+                IntentType.FINISH,
+                IntentType.SHOW_PROMOS,
+                IntentType.CONFIRM,
+            }:
+                return self._build_response("Nenhum produto cadastrado no momento.")
+
         if intent.type == IntentType.SHOW_MENU:
             return self._build_response(_menu_text(self.config))
 
@@ -811,24 +1018,19 @@ class ConversationManager:
         if not self.customer_info.get("name"):
             self.step = ConversationStep.AWAITING_NAME
             self.state["step"] = self.step.value
-            self.state["pending_confirmation"] = True
             return self._build_response("Qual seu nome?")
 
         if not self.customer_info.get("address"):
             self.step = ConversationStep.AWAITING_ADDRESS
             self.state["step"] = self.step.value
-            self.state["pending_confirmation"] = True
             return self._build_response("Qual o endereco para entrega?")
 
-        if not self.customer_info.get('phone'):
+        normalized_phone = _normalize_phone(self.customer_info.get("phone", ""))
+        if not normalized_phone:
             self.step = ConversationStep.AWAITING_PHONE
             self.state["step"] = self.step.value
-            self.state['pending_confirmation'] = True
             return self._build_response('Qual o seu WhatsApp para enviarmos atualizações do pedido ?')
-        
-        phone = self.customer_info.get("phone")
-        if phone and not _normalize_phone(phone):
-            return self._build_response("Telefone invalido. Pode enviar novamente?")
+        self.customer_info["phone"] = normalized_phone
 
         restaurant_id = self.state.get("restaurant_id") or get_restaurant_id()
         if not restaurant_id:
@@ -836,15 +1038,33 @@ class ConversationManager:
 
         print("DEBUG RESTAURANT ID:", restaurant_id)
         delivery_fee = 5.00 # Valor Fixo temporário
-        items_payload = [
-            {
-                "product_id": None,
-                "product_name": item.name,
-                "quantity": quantity,
-                "unit_price": float(item.price),
-            }
-            for item, quantity in self.cart.items()
-        ]
+        items_payload = []
+        for item, quantity in self.cart.items():
+            try:
+                safe_qty = int(quantity)
+            except (TypeError, ValueError):
+                continue
+            if safe_qty < 1:
+                continue
+            try:
+                unit_price = float(item.price)
+            except (TypeError, ValueError):
+                continue
+            if unit_price <= 0:
+                continue
+            items_payload.append(
+                {
+                    "product_id": item.id if item.id else None,
+                    "product_name": item.name,
+                    "quantity": safe_qty,
+                    "unit_price": unit_price,
+                }
+            )
+
+        if not items_payload:
+            self.step = ConversationStep.ORDERING
+            self.state["step"] = self.step.value
+            return self._build_response("Seu carrinho esta vazio. Escolha um item do cardapio.")
 
         items_payload.append(
             {
@@ -856,7 +1076,7 @@ class ConversationManager:
         )
         payload = {
             "customer_name": self.customer_info.get("name"),
-            "customer_phone": self.customer_info.get("phone"),
+            "customer_phone": normalized_phone,
             "session_id": self.state.get("session_id"),
             "restaurant_id": int(restaurant_id),
             "delivery_fee": float(self.config.delivery_fee),
@@ -876,7 +1096,6 @@ class ConversationManager:
 
         self.step = ConversationStep.AWAITING_PAYMENT
         self.state["step"] = self.step.value
-        self.state.pop("pending_confirmation", None)
 
        # text = "Perfeito! Aqui esta seu link para pagamento:\n" + checkout_url
         text = "Perfeito! Escolha a forma de pagamento:"
